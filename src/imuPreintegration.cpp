@@ -51,10 +51,8 @@ public:
         tfBuffer = std::make_shared<tf2_ros::Buffer>(get_clock());
         tfListener = std::make_shared<tf2_ros::TransformListener>(*tfBuffer);
 
-        callbackGroupImuOdometry = create_callback_group(
-            rclcpp::CallbackGroupType::MutuallyExclusive);
-        callbackGroupLaserOdometry = create_callback_group(
-            rclcpp::CallbackGroupType::MutuallyExclusive);
+        callbackGroupImuOdometry = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        callbackGroupLaserOdometry = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
         auto imuOdomOpt = rclcpp::SubscriptionOptions();
         imuOdomOpt.callback_group = callbackGroupImuOdometry;
@@ -172,7 +170,6 @@ public:
 class IMUPreintegration : public ParamServer
 {
 public:
-
     std::mutex mtx;
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr subImu;
@@ -221,13 +218,10 @@ public:
     gtsam::Pose3 imu2Lidar = gtsam::Pose3(gtsam::Rot3(1, 0, 0, 0), gtsam::Point3(-extTrans.x(), -extTrans.y(), -extTrans.z()));
     gtsam::Pose3 lidar2Imu = gtsam::Pose3(gtsam::Rot3(1, 0, 0, 0), gtsam::Point3(extTrans.x(), extTrans.y(), extTrans.z()));
 
-    IMUPreintegration(const rclcpp::NodeOptions & options) :
-            ParamServer("lio_sam_imu_preintegration", options)
+    IMUPreintegration(const rclcpp::NodeOptions & options) : ParamServer("lio_sam_imu_preintegration", options)
     {
-        callbackGroupImu = create_callback_group(
-            rclcpp::CallbackGroupType::MutuallyExclusive);
-        callbackGroupOdom = create_callback_group(
-            rclcpp::CallbackGroupType::MutuallyExclusive);
+        callbackGroupImu = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        callbackGroupOdom = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
         auto imuOpt = rclcpp::SubscriptionOptions();
         imuOpt.callback_group = callbackGroupImu;
@@ -238,18 +232,26 @@ public:
             imuTopic, qos_imu,
             std::bind(&IMUPreintegration::imuHandler, this, std::placeholders::_1),
             imuOpt);
+        // Raw IMU sensor data subscribe callback //
+
         subOdometry = create_subscription<nav_msgs::msg::Odometry>(
             "lio_sam/mapping/odometry_incremental", qos,
             std::bind(&IMUPreintegration::odometryHandler, this, std::placeholders::_1),
             odomOpt);
+        // MapOptimization 후 world frame 기준에서의 pose subscribe callback //
 
         pubImuOdometry = create_publisher<nav_msgs::msg::Odometry>(odomTopic+"_incremental", qos_imu);
+        // IMU sensor data 와 Lidar odometry 에 대한 Subscriber 설정 및 Preintegrated IMU odometry Publisher 설정 //
 
         boost::shared_ptr<gtsam::PreintegrationParams> p = gtsam::PreintegrationParams::MakeSharedU(imuGravity);
         p->accelerometerCovariance  = gtsam::Matrix33::Identity(3,3) * pow(imuAccNoise, 2); // acc white noise in continuous
         p->gyroscopeCovariance      = gtsam::Matrix33::Identity(3,3) * pow(imuGyrNoise, 2); // gyro white noise in continuous
         p->integrationCovariance    = gtsam::Matrix33::Identity(3,3) * pow(1e-4, 2); // error committed in integrating position from velocities
+        
         gtsam::imuBias::ConstantBias prior_imu_bias((gtsam::Vector(6) << 0, 0, 0, 0, 0, 0).finished());; // assume zero initial bias
+        imuIntegratorImu_ = new gtsam::PreintegratedImuMeasurements(p, prior_imu_bias); // setting up the IMU integration for IMU message thread
+        imuIntegratorOpt_ = new gtsam::PreintegratedImuMeasurements(p, prior_imu_bias); // setting up the IMU integration for optimization 
+        // Initial IMU preintegration 설정 //
 
         priorPoseNoise  = gtsam::noiseModel::Diagonal::Sigmas((gtsam::Vector(6) << 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2).finished()); // rad,rad,rad,m, m, m
         priorVelNoise   = gtsam::noiseModel::Isotropic::Sigma(3, 1e4); // m/s
@@ -257,9 +259,7 @@ public:
         correctionNoise = gtsam::noiseModel::Diagonal::Sigmas((gtsam::Vector(6) << 0.05, 0.05, 0.05, 0.1, 0.1, 0.1).finished()); // rad,rad,rad,m, m, m
         correctionNoise2 = gtsam::noiseModel::Diagonal::Sigmas((gtsam::Vector(6) << 1, 1, 1, 1, 1, 1).finished()); // rad,rad,rad,m, m, m
         noiseModelBetweenBias = (gtsam::Vector(6) << imuAccBiasN, imuAccBiasN, imuAccBiasN, imuGyrBiasN, imuGyrBiasN, imuGyrBiasN).finished();
-        
-        imuIntegratorImu_ = new gtsam::PreintegratedImuMeasurements(p, prior_imu_bias); // setting up the IMU integration for IMU message thread
-        imuIntegratorOpt_ = new gtsam::PreintegratedImuMeasurements(p, prior_imu_bias); // setting up the IMU integration for optimization        
+        // IMU preintegration Noise, Bias 파라미터 설정 //
     }
 
     void resetOptimization()
@@ -489,18 +489,21 @@ public:
         return false;
     }
 
+    // Raw IMU sensor Subscribe callback //
     void imuHandler(const sensor_msgs::msg::Imu::SharedPtr imu_raw)
     {
         std::lock_guard<std::mutex> lock(mtx);
-
         sensor_msgs::msg::Imu thisImu = imuConverter(*imu_raw);
+        // config 파일의 extrinsicRot, extrinsicRPY 파라미터를 활용하여 IMU frame 회전 적용 //
 
         imuQueOpt.push_back(thisImu);
         imuQueImu.push_back(thisImu);
+        // IMU sensor data 저장 //
 
-        if (doneFirstOpt == false)  // 최초 map optimization 이 될때까지는 그냥 넘어간다.
+        if (doneFirstOpt == false)  // 최초 map optimization이 될때까지는 IMU sensor data만 저장한다.
             return;
 
+        // 최초 map optimization 이후부터 preintegration 수행 및 IMU 기반 odometry 추정 //
         double imuTime = stamp2Sec(thisImu.header.stamp);
         double dt = (lastImuT_imu < 0) ? (1.0 / 500.0) : (imuTime - lastImuT_imu);
         lastImuT_imu = imuTime;
@@ -511,6 +514,8 @@ public:
 
         // predict odometry
         gtsam::NavState currentState = imuIntegratorImu_->predict(prevStateOdom, prevBiasOdom);
+        // Map optimization 결과(prevStateOdom, prevBiasOdom) 와 현재 measurement 바탕으로, state 추정 // 
+        // [Q] prevStateOdom 의 경우 기준 frame 은 무엇인가?
 
         // publish odometry
         auto odometry = nav_msgs::msg::Odometry();
@@ -518,10 +523,12 @@ public:
         odometry.header.frame_id = odometryFrame;
         odometry.child_frame_id = "odom_imu";
 
-        // transform imu pose to ldiar
+        // transform imu pose to lidar
         gtsam::Pose3 imuPose = gtsam::Pose3(currentState.quaternion(), currentState.position());
         gtsam::Pose3 lidarPose = imuPose.compose(imu2Lidar);
+        // imu2Lidar 의 경우는 config 파일의 extrinsicTrans 파라미터를 활용하여 변환 행렬을 설정, 이를 적용하여 imu frame -> lidar frame 변환 //
 
+        // Imu 기반 odometry Publish //
         odometry.pose.pose.position.x = lidarPose.translation().x();
         odometry.pose.pose.position.y = lidarPose.translation().y();
         odometry.pose.pose.position.z = lidarPose.translation().z();
@@ -536,6 +543,7 @@ public:
         odometry.twist.twist.angular.x = thisImu.angular_velocity.x + prevBiasOdom.gyroscope().x();
         odometry.twist.twist.angular.y = thisImu.angular_velocity.y + prevBiasOdom.gyroscope().y();
         odometry.twist.twist.angular.z = thisImu.angular_velocity.z + prevBiasOdom.gyroscope().z();
+        // [Q] 왜 속도 관련 변수는 변환하지 않았을까?
         pubImuOdometry->publish(odometry);
     }
 };
