@@ -489,7 +489,7 @@ public:
         return false;
     }
 
-    // Raw IMU sensor Subscribe callback //
+    // Raw IMU sensor Subscribe callback (odometry callback 보다 빨리 돈다) //
     void imuHandler(const sensor_msgs::msg::Imu::SharedPtr imu_raw)
     {
         std::lock_guard<std::mutex> lock(mtx);
