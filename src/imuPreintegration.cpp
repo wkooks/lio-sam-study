@@ -283,6 +283,7 @@ public:
         systemInitialized = false;
     }
 
+    // map optimization 후 world frame 기준으로 keyframe 의 pose 를 받아온다. //
     void odometryHandler(const nav_msgs::msg::Odometry::SharedPtr odomMsg)
     {
         std::lock_guard<std::mutex> lock(mtx);
@@ -290,7 +291,7 @@ public:
         double currentCorrectionTime = stamp2Sec(odomMsg->header.stamp);
 
         // make sure we have imu data to integrate
-        if (imuQueOpt.empty())
+        if (imuQueOpt.empty())  // 최적화된 IMU 데이터가 없는 경우는 패스
             return;
 
         float p_x = odomMsg->pose.pose.position.x;
@@ -302,26 +303,27 @@ public:
         float r_w = odomMsg->pose.pose.orientation.w;
         bool degenerate = (int)odomMsg->pose.covariance[0] == 1 ? true : false;
         gtsam::Pose3 lidarPose = gtsam::Pose3(gtsam::Rot3::Quaternion(r_w, r_x, r_y, r_z), gtsam::Point3(p_x, p_y, p_z));
-
+        // world frame 에서 최적화된 keyframe pose 를 gtsam 의 Pose3 객체로 변환한다. //
 
         // 0. initialize system
         if (systemInitialized == false)
         {
             resetOptimization();
-
             // pop old IMU message
             while (!imuQueOpt.empty())
             {
                 if (stamp2Sec(imuQueOpt.front().header.stamp) < currentCorrectionTime - delta_t)
                 {
                     lastImuT_opt = stamp2Sec(imuQueOpt.front().header.stamp);
+                    // 가장 최근 최적화된 IMU timestamp 일단 저장 //
                     imuQueOpt.pop_front();
-                }
+                }   // 일정 시간 범위를 벗어나는 IMU 데이터는 제거 //
                 else
                     break;
             }
             // initial pose
-            prevPose_ = lidarPose.compose(lidar2Imu);
+            prevPose_ = lidarPose.compose(lidar2Imu);   
+            // Lidar frame 과 IMU frame 의 회전축이 일치하기 때문에, translation 요소만 반영하여 변환한다. //
             gtsam::PriorFactor<gtsam::Pose3> priorPose(X(0), prevPose_, priorPoseNoise);
             graphFactors.add(priorPose);
             // initial velocity
@@ -494,11 +496,13 @@ public:
     {
         std::lock_guard<std::mutex> lock(mtx);
         sensor_msgs::msg::Imu thisImu = imuConverter(*imu_raw);
-        // config 파일의 extrinsicRot, extrinsicRPY 파라미터를 활용하여 IMU frame 회전 적용 //
+        // config 파일의 extrinsicRot, extrinsicRPY 파라미터를 활용하여 Lidar frame 과 동일한 축을 가지는 frame 으로 회전 변환함. //
 
         imuQueOpt.push_back(thisImu);
         imuQueImu.push_back(thisImu);
         // IMU sensor data 저장 //
+        // imuQueOpt 의 경우는 factor graph 적용하여 최적화하기 위한 IMU 데이터 저장용 //
+        // imuQueImu 의 경우는 최적화하여 얻은 bias 를 반영하여 integrated measurement 를 보완하기 위한 IMU 데이터 저장용, odometry 출력용 // 
 
         if (doneFirstOpt == false)  // 최초 map optimization이 될때까지는 IMU sensor data만 저장한다.
             return;
@@ -511,11 +515,11 @@ public:
         // integrate this single imu message
         imuIntegratorImu_->integrateMeasurement(gtsam::Vector3(thisImu.linear_acceleration.x, thisImu.linear_acceleration.y, thisImu.linear_acceleration.z),
                                                 gtsam::Vector3(thisImu.angular_velocity.x,    thisImu.angular_velocity.y,    thisImu.angular_velocity.z), dt);
+        // imuIntegratorImu_ 의 경우는 biases update 하여 integreted measurement 를 보완한 결과를 의미, 여기에 current measurement 를 integration 하는 과정 //  
 
         // predict odometry
         gtsam::NavState currentState = imuIntegratorImu_->predict(prevStateOdom, prevBiasOdom);
-        // Map optimization 결과(prevStateOdom, prevBiasOdom) 와 현재 measurement 바탕으로, state 추정 // 
-        // [Q] prevStateOdom 의 경우 기준 frame 은 무엇인가?
+        // 최적화되지 않은 integrated measurement 와 최적화된 이전 상태 정보를 기반으로 현재 상태를 추정 //
 
         // publish odometry
         auto odometry = nav_msgs::msg::Odometry();
@@ -526,7 +530,7 @@ public:
         // transform imu pose to lidar
         gtsam::Pose3 imuPose = gtsam::Pose3(currentState.quaternion(), currentState.position());
         gtsam::Pose3 lidarPose = imuPose.compose(imu2Lidar);
-        // imu2Lidar 의 경우는 config 파일의 extrinsicTrans 파라미터를 활용하여 변환 행렬을 설정, 이를 적용하여 imu frame -> lidar frame 변환 //
+        // imu2Lidar 의 경우는 config 파일의 extrinsicTrans 파라미터를 활용하여 변환 행렬을 설정, (imu2lidar 의 경우는 I 회전 변환에 lidar 위치로 변환해줌)//
 
         // Imu 기반 odometry Publish //
         odometry.pose.pose.position.x = lidarPose.translation().x();
@@ -543,7 +547,7 @@ public:
         odometry.twist.twist.angular.x = thisImu.angular_velocity.x + prevBiasOdom.gyroscope().x();
         odometry.twist.twist.angular.y = thisImu.angular_velocity.y + prevBiasOdom.gyroscope().y();
         odometry.twist.twist.angular.z = thisImu.angular_velocity.z + prevBiasOdom.gyroscope().z();
-        // [Q] 왜 속도 관련 변수는 변환하지 않았을까?
+        // Lidar frame 과 IMU frame 은 회전축이 일치하기 때문에 속도는 동일하다. //
         pubImuOdometry->publish(odometry);
     }
 };
