@@ -384,6 +384,7 @@ public:
 
 
         // 1. integrate imu data and optimize
+        // 여기서부터 시작! //
         while (!imuQueOpt.empty())
         {
             // pop and integrate imu data that is between two optimizations
