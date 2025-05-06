@@ -247,10 +247,10 @@ public:
         p->accelerometerCovariance  = gtsam::Matrix33::Identity(3,3) * pow(imuAccNoise, 2); // acc white noise in continuous
         p->gyroscopeCovariance      = gtsam::Matrix33::Identity(3,3) * pow(imuGyrNoise, 2); // gyro white noise in continuous
         p->integrationCovariance    = gtsam::Matrix33::Identity(3,3) * pow(1e-4, 2); // error committed in integrating position from velocities
-        
+
         gtsam::imuBias::ConstantBias prior_imu_bias((gtsam::Vector(6) << 0, 0, 0, 0, 0, 0).finished());; // assume zero initial bias
         imuIntegratorImu_ = new gtsam::PreintegratedImuMeasurements(p, prior_imu_bias); // setting up the IMU integration for IMU message thread
-        imuIntegratorOpt_ = new gtsam::PreintegratedImuMeasurements(p, prior_imu_bias); // setting up the IMU integration for optimization 
+        imuIntegratorOpt_ = new gtsam::PreintegratedImuMeasurements(p, prior_imu_bias); // setting up the IMU integration for optimization
         // Initial IMU preintegration 설정 //
 
         priorPoseNoise  = gtsam::noiseModel::Diagonal::Sigmas((gtsam::Vector(6) << 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2).finished()); // rad,rad,rad,m, m, m
@@ -322,7 +322,7 @@ public:
                     break;
             }
             // initial pose
-            prevPose_ = lidarPose.compose(lidar2Imu);   
+            prevPose_ = lidarPose.compose(lidar2Imu);
             // Lidar frame 과 IMU frame 의 회전축이 일치하기 때문에, translation 요소만 반영하여 변환한다. //
             gtsam::PriorFactor<gtsam::Pose3> priorPose(X(0), prevPose_, priorPoseNoise);
             graphFactors.add(priorPose);
@@ -345,7 +345,7 @@ public:
 
             imuIntegratorImu_->resetIntegrationAndSetBias(prevBias_);
             imuIntegratorOpt_->resetIntegrationAndSetBias(prevBias_);
-            
+
             key = 1;
             systemInitialized = true;
             return;
@@ -395,7 +395,7 @@ public:
                 imuIntegratorOpt_->integrateMeasurement(
                         gtsam::Vector3(thisImu->linear_acceleration.x, thisImu->linear_acceleration.y, thisImu->linear_acceleration.z),
                         gtsam::Vector3(thisImu->angular_velocity.x,    thisImu->angular_velocity.y,    thisImu->angular_velocity.z), dt);
-                
+
                 lastImuT_opt = imuTime;
                 imuQueOpt.pop_front();
             }
@@ -469,6 +469,7 @@ public:
 
         ++key;
         doneFirstOpt = true;
+        // 여기까지 분석이 목표! //
     }
 
     bool failureDetection(const gtsam::Vector3& velCur, const gtsam::imuBias::ConstantBias& biasCur)
@@ -502,7 +503,7 @@ public:
         imuQueImu.push_back(thisImu);
         // IMU sensor data 저장 //
         // imuQueOpt 의 경우는 factor graph 적용하여 최적화하기 위한 IMU 데이터 저장용 //
-        // imuQueImu 의 경우는 최적화하여 얻은 bias 를 반영하여 integrated measurement 를 보완하기 위한 IMU 데이터 저장용, odometry 출력용 // 
+        // imuQueImu 의 경우는 최적화하여 얻은 bias 를 반영하여 integrated measurement 를 보완하기 위한 IMU 데이터 저장용, odometry 출력용 //
 
         if (doneFirstOpt == false)  // 최초 map optimization이 될때까지는 IMU sensor data만 저장한다.
             return;
@@ -515,7 +516,7 @@ public:
         // integrate this single imu message
         imuIntegratorImu_->integrateMeasurement(gtsam::Vector3(thisImu.linear_acceleration.x, thisImu.linear_acceleration.y, thisImu.linear_acceleration.z),
                                                 gtsam::Vector3(thisImu.angular_velocity.x,    thisImu.angular_velocity.y,    thisImu.angular_velocity.z), dt);
-        // imuIntegratorImu_ 의 경우는 biases update 하여 integreted measurement 를 보완한 결과를 의미, 여기에 current measurement 를 integration 하는 과정 //  
+        // imuIntegratorImu_ 의 경우는 biases update 하여 integreted measurement 를 보완한 결과를 의미, 여기에 current measurement 를 integration 하는 과정 //
 
         // predict odometry
         gtsam::NavState currentState = imuIntegratorImu_->predict(prevStateOdom, prevBiasOdom);
@@ -540,7 +541,7 @@ public:
         odometry.pose.pose.orientation.y = lidarPose.rotation().toQuaternion().y();
         odometry.pose.pose.orientation.z = lidarPose.rotation().toQuaternion().z();
         odometry.pose.pose.orientation.w = lidarPose.rotation().toQuaternion().w();
-        
+
         odometry.twist.twist.linear.x = currentState.velocity().x();
         odometry.twist.twist.linear.y = currentState.velocity().y();
         odometry.twist.twist.linear.z = currentState.velocity().z();
@@ -554,7 +555,7 @@ public:
 
 
 int main(int argc, char** argv)
-{   
+{
     rclcpp::init(argc, argv);
 
     rclcpp::NodeOptions options;
